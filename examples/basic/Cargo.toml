@@ -1,0 +1,11 @@
+[package]
+name = "basic"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axum = "0.7.5"
+tokio = { version = "1.37", features = ["full"] }
+axum-metrics = { path = "../../axum-metrics" }
+tower = "0.4.13"
