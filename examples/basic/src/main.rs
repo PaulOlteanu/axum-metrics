@@ -8,7 +8,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(root))
         .route_layer(MetricLayer {
-            time_failures: false,
+            time_failures: true,
         });
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -16,6 +16,7 @@ async fn main() {
 }
 
 async fn root() -> &'static str {
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     "Hello, World!"
 }

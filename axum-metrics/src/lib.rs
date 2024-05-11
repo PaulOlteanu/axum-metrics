@@ -19,7 +19,7 @@ impl<S> Layer<S> for MetricLayer {
 
     fn layer(&self, service: S) -> Self::Service {
         MetricService {
-            time_failures: self.time_failures,
+            time_incomplete: self.time_failures,
             service,
         }
     }
@@ -27,15 +27,33 @@ impl<S> Layer<S> for MetricLayer {
 
 #[derive(Debug, Clone)]
 pub struct MetricService<S> {
-    time_failures: bool,
+    time_incomplete: bool,
     service: S,
 }
 
-struct RequestMetadata {}
+struct RequestMetadata {
+    method: String,
+    path: String,
+}
 
 impl From<&axum::extract::Request> for RequestMetadata {
     fn from(value: &axum::extract::Request) -> Self {
-        Self {}
+        Self {
+            method: value.method().to_string(),
+            path: value.uri().path().to_string(),
+        }
+    }
+}
+
+struct ResponseMetadata {
+    code: usize,
+}
+
+impl From<&axum::response::Response> for ResponseMetadata {
+    fn from(value: &axum::response::Response) -> Self {
+        Self {
+            code: value.status().as_u16() as usize,
+        }
     }
 }
 
@@ -46,6 +64,7 @@ where
     S::Error: Into<Box<dyn Error + Send + Sync>> + 'static,
     S::Response: 'static,
     RequestMetadata: for<'a> std::convert::From<&'a Request>,
+    ResponseMetadata: for<'a> std::convert::From<&'a S::Response>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -56,14 +75,15 @@ where
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
-        let metadata = RequestMetadata::from(&request);
+        let request_metadata = RequestMetadata::from(&request);
         let fut = self.service.call(request);
 
         ObservedFuture {
             response_future: fut,
-            time_failures: self.time_failures,
+            time_failures: self.time_incomplete,
             started_at: None,
-            metadata,
+            request_metadata,
+            response_metadata: None,
         }
     }
 }
@@ -74,7 +94,8 @@ pub struct ObservedFuture<F> {
     response_future: F,
     time_failures: bool,
     started_at: Option<Instant>,
-    metadata: RequestMetadata,
+    request_metadata: RequestMetadata,
+    response_metadata: Option<ResponseMetadata>,
 }
 
 #[pinned_drop]
@@ -83,6 +104,19 @@ impl<F> PinnedDrop for ObservedFuture<F> {
         let this = self.project();
         if let Some(started_at) = this.started_at {
             println!("duration: {:#?}", started_at.elapsed());
+            if let Some(response_metadata) = this.response_metadata {
+                println!(
+                    "{}, {}, {}",
+                    this.request_metadata.method,
+                    this.request_metadata.path,
+                    response_metadata.code
+                );
+            } else {
+                println!(
+                    "{}, {}",
+                    this.request_metadata.method, this.request_metadata.path
+                );
+            }
         }
     }
 }
@@ -90,6 +124,7 @@ impl<F> PinnedDrop for ObservedFuture<F> {
 impl<F, Response, Error> Future for ObservedFuture<F>
 where
     F: Future<Output = Result<Response, Error>>,
+    ResponseMetadata: for<'a> std::convert::From<&'a Response>,
 {
     type Output = Result<Response, Error>;
 
@@ -101,6 +136,9 @@ where
         }
 
         if let Poll::Ready(result) = this.response_future.poll(cx) {
+            if let Ok(response) = result.as_ref() {
+                *this.response_metadata = Some(ResponseMetadata::from(response));
+            }
             Poll::Ready(result)
         } else {
             Poll::Pending
